@@ -1,0 +1,143 @@
+from google.colab import drive
+drive.mount('/gdrive')  ## mount drive
+!unzip '/gdrive/My Drive/4811/Concrete_Crack_Images.zip' -d 'concrete'
+
+import os
+import numpy as np
+from PIL import Image
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset,DataLoader,random_split
+from torch.utils.data import DataLoader
+import torch.optim as optim
+
+
+class Concrete_Img(Dataset):
+    def __init__(self, root_dir):
+      self.root_dir = root_dir
+      self.neg_path = os.path.join(root_dir, 'Negative_img')
+      self.pos_path = os.path.join(root_dir, 'Positive_img')
+
+      self.neg_images = [os.path.join(self.neg_path, img) for img in os.listdir(self.neg_path)]
+      self.pos_images = [os.path.join(self.pos_path, img) for img in os.listdir(self.pos_path)]
+      self.all_images = self.neg_images + self.pos_images
+      # Other previous codes
+      # Labels: 0 for 'neg', 1 for 'pos'
+      self.labels = [0] * len(self.neg_images) + [1] * len(self.pos_images)
+    # Other previous codes
+    def __len__(self):
+        return len(self.all_images)
+    def __getitem__(self, idx):
+        img_path = self.all_images[idx] # get the directory given index
+        image = Image.open(img_path).convert('L') # load the data from directory
+        image = np.array(image)
+        image = np.reshape(image,(-1,30,30))
+        image = torch.from_numpy(image).float()
+
+        label = self.labels[idx]
+        return image, label
+
+class SimpleCNN(nn.Module):
+    def __init__(self):
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=8, kernel_size=3, padding='same')
+        self.pool1 = nn.MaxPool2d(kernel_size=3)
+        self.conv2 = nn.Conv2d(in_channels=8, out_channels=16, kernel_size=3, padding='same')
+        self.pool2 = nn.MaxPool2d(kernel_size=2)
+        self.conv3 = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, padding='same')
+        self.flatten = nn.Flatten()
+        self.relu = nn.ReLU()
+        self.fc = nn.Linear(25, 2)
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.pool1(x)
+
+        x = self.conv2(x)
+        x = self.relu(x)
+        x = self.pool2(x)
+
+        x = self.conv3(x)
+        x = self.relu(x)
+
+        x = self.flatten(x)
+        x = self.fc(x)
+        x = self.softmax(x)
+        return x
+
+root_dir = '/content/concrete/Concrete_Crack_Images/'
+concrete_dataset = Concrete_Img(root_dir)
+
+# Define the size of each split
+train_size = int(0.8 * len(concrete_dataset))  # 80% of the dataset
+val_size = int(0.1 * len(concrete_dataset))   # 10% of the dataset
+test_size = len(concrete_dataset) - train_size - val_size  # Remaining 10% of the dataset
+torch.manual_seed(0)
+# Split the dataset
+train_dataset, val_dataset, test_dataset = random_split(concrete_dataset, [train_size, val_size, test_size])
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size = 32, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+model = SimpleCNN()
+criterion = nn.CrossEntropyLoss()
+
+optimizer = optim.Adam(model.parameters())
+
+num_epochs = 5
+best_acc = 0
+print(sum(p.numel() for p in model.parameters() if p.requires_grad))
+
+# Training loop
+for epoch in range(num_epochs):
+    model.train()
+    running_loss = 0.0
+
+    for inputs, labels in train_loader:
+        # Forward pass to get outputs
+        outputs = model(inputs)
+
+        # Calculate the loss
+        loss = criterion(outputs, labels)
+
+        # Backpropagation
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # Get statistics
+        running_loss += loss.item()
+
+    # Print average loss for the epoch
+    print(f'Epoch {epoch+1}/{num_epochs} - Training loss: {running_loss/len(train_loader)}')
+
+    # Validation loop
+    model.eval()  # Set the model to evaluation mode
+    val_running_loss = 0.0
+    correct = 0
+    total = 0
+    with torch.no_grad():  # No gradients need to be computed for validation
+        for inputs, labels in val_loader:
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            val_running_loss += loss.item()
+
+            # Calculate accuracy
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    # Print average validation loss and accuracy for the epoch
+    print(f'Epoch {epoch+1}/{num_epochs} - Validation loss: {val_running_loss/len(val_loader)}')
+    print(f'Epoch {epoch+1}/{num_epochs} - Validation accuracy: {100 * correct / total}%')
+
+    # Save the model if the current accuracy is the best so far
+    acc = 100 * correct / total
+    if acc > best_acc:
+        best_acc = acc
+        torch.save(model.state_dict(), 'best_model.pth')
+        print(f'Model improved and saved with accuracy: {acc}%')
+
+print('Finished Training')
